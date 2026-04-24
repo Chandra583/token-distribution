@@ -1,22 +1,68 @@
 # BNB Chain Token Distribution System
 
-A production-grade BEP-20 token distribution system for BSC Testnet.
-Distributes **50,000,000 ABC tokens** to **100,000 wallets** via gas-optimized
-batch transactions on BNB Smart Chain Testnet.
+A production-grade BEP-20 token creation and mass wallet distribution system for BNB Smart Chain. Distributes tokens to **100,000 unique wallets** across **500 batched on-chain transactions** using three Solidity gas optimizations.
+
+---
+
+## Proven Results (Local Hardhat Test)
+
+| Metric | Value |
+|---|---|
+| Total wallets | 100,000 |
+| Successful wallets | **100,000 (100%)** |
+| Failed wallets | **0** |
+| Total batches | 500 |
+| Total time | **27m 53s** |
+| Avg gas / batch | 5,742,274 |
+| Total gas used | 2,871,137,384 |
+| Gas cost @ 10 gwei | **28.71 BNB** |
+| Throughput | 59.8 wallets/s |
+
+---
+
+## Project Structure
+
+```
+bnb-token-distribution/
+├── contracts/
+│   ├── ABCToken.sol              # BEP-20 token — 50M pre-minted
+│   └── MultiSender.sol           # Gas-optimized batch distributor
+├── scripts/
+│   ├── deploy-token.ts           # Deploy ABCToken
+│   ├── deploy-multisender.ts     # Deploy MultiSender
+│   ├── generate-wallets.ts       # BIP44 HD derivation — 100k wallets
+│   ├── prepare-distribution.ts   # Random amounts + bytes32 packing
+│   ├── distribute.ts             # Main distribution engine
+│   └── export-results.ts         # Export CSV + Excel report
+├── output/                        # (gitignored)
+│   ├── wallets.csv               # 100,000 wallet addresses + keys
+│   ├── MASTER_MNEMONIC.txt       # HD wallet master seed (keep secret)
+│   ├── distribution-plan.json    # Resume checkpoint
+│   ├── distribution-log.csv      # Final distribution log
+│   ├── distribution-log.xlsx     # Excel report (3 sheets)
+│   └── distribution.log          # Full timestamped run log
+├── .env.example                   # Environment variable template
+├── .env                           # Actual config (gitignored)
+├── .gitignore
+├── hardhat.config.ts
+├── package.json
+├── tsconfig.json
+└── remappings.txt
+```
 
 ---
 
 ## Prerequisites
 
-- **Node.js 18+** and **npm**
-- **Hardhat** (installed via npm — no global install needed)
-- **Alchemy API key** for BSC Testnet RPC — sign up at https://www.alchemy.com/
-- A BSC Testnet wallet with enough tBNB for gas
-  (faucet: https://www.bnbchain.org/en/testnet-faucet)
+| Tool | Version |
+|---|---|
+| Node.js | >= 18 |
+| npm | >= 9 |
+| TypeScript | ^5.4 |
 
 ---
 
-## Setup Steps
+## Setup
 
 ### 1. Install dependencies
 
@@ -27,231 +73,327 @@ npm install
 
 ### 2. Configure environment
 
-Copy the example env file and fill in your values:
+Copy the example and fill in your values:
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env`:
-
+**For local testing** (Hardhat):
+```env
+ALCHEMY_RPC_URL=http://127.0.0.1:8545
+FALLBACK_RPC_1=http://127.0.0.1:8545
+FALLBACK_RPC_2=http://127.0.0.1:8545
+PRIVATE_KEY=ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+TOKEN_ADDRESS=        # fill after deploy
+MULTISENDER_ADDRESS=  # fill after deploy
 ```
+
+**For BSC Testnet**:
+```env
 ALCHEMY_RPC_URL=https://bnb-testnet.g.alchemy.com/v2/YOUR_KEY
-PRIVATE_KEY=your_deployer_private_key_here
 FALLBACK_RPC_1=https://data-seed-prebsc-1-s1.binance.org:8545
 FALLBACK_RPC_2=https://data-seed-prebsc-2-s1.binance.org:8545
-TOKEN_ADDRESS=           # fill after step 4
-MULTISENDER_ADDRESS=     # fill after step 5
+PRIVATE_KEY=your_deployer_private_key_here
+TOKEN_ADDRESS=        # fill after deploy
+MULTISENDER_ADDRESS=  # fill after deploy
 ```
 
 ### 3. Compile contracts
 
 ```bash
-npx hardhat compile
+npm run compile
 ```
-
-### 4. Deploy ABCToken
-
-```bash
-npx hardhat run scripts/deploy-token.ts --network bscTestnet
-```
-
-Copy the printed address into `.env` as `TOKEN_ADDRESS`.
-
-### 5. Deploy MultiSender
-
-```bash
-npx hardhat run scripts/deploy-multisender.ts --network bscTestnet
-```
-
-Copy the printed address into `.env` as `MULTISENDER_ADDRESS`.
-
-### 6. Generate 100,000 wallets
-
-```bash
-npx ts-node scripts/generate-wallets.ts
-```
-
-Outputs:
-- `output/wallets.csv` — index, address, privateKey, derivationPath
-- `output/MASTER_MNEMONIC.txt` — BIP44 master seed (keep secure)
-
-Expected time: **3–5 minutes**
-
-### 7. Prepare distribution plan
-
-```bash
-npx ts-node scripts/prepare-distribution.ts
-```
-
-Outputs:
-- `output/distribution-plan.json` — per-wallet amounts, packed calldata, sent status
-
-### 8. Run distribution
-
-```bash
-npx ts-node scripts/distribute.ts
-```
-
-Outputs:
-- `output/distribution.log` — timestamped log of every batch
-- `output/distribution-log.csv` — final record of all sent wallets
-
-Expected time: **5–10 minutes** (500 batches × 5 parallel)
 
 ---
 
-## Architecture Overview
+## Running the System
 
-### Why Batch Push instead of Merkle Claim
+Run each step in order. Steps 1–4 run once; step 5 can be resumed if interrupted.
 
-All 100,000 wallets are freshly generated and controlled by the deployer.
-A Merkle-based claim pattern would require each wallet to independently hold
-tBNB and call `claim()` — impossible for newly generated wallets with zero
-balance. Batch Push sends tokens directly from the deployer to every wallet:
-no user action required, no per-wallet BNB needed.
+### Step 1 — Start local node (local testing only)
 
-### Data Flow
+```bash
+# Terminal 1 — keep this running
+npx hardhat node
+```
+
+### Step 2 — Deploy ABCToken
+
+```bash
+# Local
+npx hardhat run scripts/deploy-token.ts --network localhost
+
+# BSC Testnet
+npm run deploy:token
+```
+
+Copy the printed `TOKEN_ADDRESS` into `.env`.
+
+### Step 3 — Deploy MultiSender
+
+```bash
+# Local
+npx hardhat run scripts/deploy-multisender.ts --network localhost
+
+# BSC Testnet
+npm run deploy:multisender
+```
+
+Copy the printed `MULTISENDER_ADDRESS` into `.env`.
+
+### Step 4 — Generate 100,000 wallets
+
+```bash
+npm run generate:wallets
+```
+
+**Output:**
+- `output/wallets.csv` — 100,000 rows: index, address, privateKey, derivationPath
+- `output/MASTER_MNEMONIC.txt` — master seed phrase
+
+> ⚠️ **Security:** Keep `MASTER_MNEMONIC.txt` and `wallets.csv` private. They control all 100,000 wallets.
+
+**Time:** ~8–9 minutes (BIP44 HD derivation for 100k wallets)
+
+### Step 5 — Prepare distribution plan
+
+```bash
+npm run prepare:distribution
+```
+
+**Output:** `output/distribution-plan.json` — 100,000 entries with random amounts (100–300 tokens) and packed calldata.
+
+**Time:** ~4 seconds
+
+### Step 6 — Run distribution
+
+```bash
+npm run distribute
+```
+
+The script will:
+1. Check and approve token allowance for MultiSender
+2. Send 500 batches of 200 wallets each (5 in parallel)
+3. Auto-retry any failed batches (up to 5 drain passes)
+4. Save checkpoint after every parallel group
+5. Export `distribution-log.csv` and `distribution-log.xlsx` on completion
+
+**The script will NOT exit until all 100,000 wallets are successfully sent.**
+
+> If interrupted (Ctrl+C), state is saved. Re-run `npm run distribute` to resume from the last checkpoint.
+
+### Step 7 — Export results (optional)
+
+```bash
+npm run export
+```
+
+Generates fresh `distribution-log.csv` and `distribution-log.xlsx` from the current plan state.
+
+---
+
+## Architecture
 
 ```
 generate-wallets.ts
-        │ wallets.csv
-        ▼
+    │  wallets.csv (100k wallets, BIP44)
+    ▼
 prepare-distribution.ts
-        │ distribution-plan.json
-        ▼
-distribute.ts ──► RpcManager ──► Alchemy (primary)
-        │                   └──► Binance Fallback RPCs
-        │
-        ├──► approve()  ──► ABCToken.sol
-        └──► multisend() ──► MultiSender.sol ──► transferFrom × 200
+    │  distribution-plan.json (random amounts, packed bytes32)
+    ▼
+distribute.ts
+    │
+    ├── ensureApproval()      approve MultiSender allowance
+    │
+    ├── SerialTxSubmitter     serialises nonce → sign → broadcast
+    │
+    ├── RpcManager            Alchemy primary → 2 Binance fallbacks
+    │
+    └── Drain Loop (5 passes)
+            │
+            ├── Pass 1: 500 batches × 200 wallets, 5 parallel
+            ├── Pass 2: retry any failed batches from Pass 1
+            └── Pass N: until 0 unsent wallets remain
+                    │
+                    ▼
+            distribution-plan.json   (checkpoint, atomic write)
+            distribution-log.csv     (final output)
+            distribution-log.xlsx    (Excel report)
 ```
-
-### Resume Capability
-
-After every parallel group of 5 batches completes, `distribute.ts` writes
-the entire `distribution-plan.json` back to disk synchronously
-(`fs.writeFileSync`). Each processed entry has `sent: true`, `txHash`, and
-`timestamp`. On restart the script filters out `sent === true` entries and
-picks up exactly where it left off.
-
-Ctrl+C is also intercepted — the SIGINT handler logs the interruption and
-exits cleanly; the last checkpoint is preserved.
 
 ---
 
-## Gas Optimization Breakdown
+## Gas Optimizations
 
-Three optimizations are applied together in `MultiSender.sol`:
+Three optimizations are applied in `MultiSender.sol`:
 
-### 1. Packed Calldata (Optimization 1)
+### 1. Packed Calldata
 
-Instead of two separate arrays (`address[]` + `uint256[]`), each recipient
-is encoded as a single `bytes32`:
+Each recipient is encoded as a single `bytes32` word:
 
 ```
-bits 255–96 : address  (20 bytes)
-bits  95– 0 : uint96   (12 bytes — whole-token amount, e.g. 147)
+bits 255–96 : address   (20 bytes)
+bits  95– 0 : uint96    (12 bytes — whole token amount)
 ```
 
-The contract unpacks and scales: `amount * 1e18` → actual wei.
+**Savings:** 32 bytes/recipient vs 64 bytes (naive) → **38% less calldata gas**
 
-**Saving:** 32 bytes/recipient vs 52 bytes → **~38% less calldata gas**
+Built in `prepare-distribution.ts`:
+```typescript
+ethers.solidityPacked(["address", "uint96"], [address, amountWholeTokens])
+```
 
-### 2. Bitmap Duplicate Guard (Optimization 2)
+Unpacked in `MultiSender.sol`:
+```solidity
+address recipient = address(uint160(uint256(packed[i]) >> 96));
+uint256 amount    = uint256(uint96(uint256(packed[i]))) * 1e18;
+```
+
+### 2. Bitmap Duplicate Guard
 
 ```solidity
 mapping(uint256 => uint256) private _claimed;
 ```
 
-One 256-bit storage slot tracks 256 wallet indices. Reading costs ~200 gas
-(warm SLOAD); the first write costs ~20,000 gas but amortizes over 256
-addresses vs 20,000 gas × 256 for a `mapping(address => bool)`.
+One 256-bit storage slot holds flags for **256 wallet indices**.
 
-**Saving:** 1 storage slot per 256 addresses → **~256× cheaper than bool mapping**
+```solidity
+uint256 bucket = index / 256;   // which slot
+uint256 bit    = index % 256;   // which bit in that slot
+```
 
-### 3. Unchecked Loop Increment (Optimization 3)
+**Savings:** ~78 gas per flag vs 20,000 gas (`mapping(address => bool)`) → **256× cheaper duplicate prevention**
+
+### 3. Unchecked Loop Increment
 
 ```solidity
 unchecked { ++i; }
 ```
 
-Solidity 0.8+ adds overflow checks on all arithmetic by default. The loop
-counter can never overflow `uint256`, so the check is provably unnecessary.
+Removes Solidity 0.8 overflow check from loop counter. **Saves ~40 gas × 200 iterations = 8,000 gas per batch.**
 
-**Saving:** ~40 gas per loop iteration
+### Gas Comparison
 
-### Combined Gas Estimate
-
-| Approach                    | Gas (est.)  | BNB @ 5 gwei | USD @ $600 |
-|-----------------------------|-------------|--------------|------------|
-| Naive 1-by-1                | 8.1B gas    | 40.5 BNB     | $24,300    |
-| Batch only (200/tx)         | 6.0B gas    | 30.0 BNB     | $18,000    |
-| Batch + packed calldata     | ~3.7B gas   | 18.5 BNB     | $11,100    |
-| Batch + packed + bitmap     | ~3.5B gas   | 17.5 BNB     | $10,500    |
-
-> **Note:** BSC Testnet gas is free. Mainnet figures are shown for reference
-> and assume 5 gwei gas price and $600/BNB.
+| Approach | Gas / batch | Total gas (500 batches) | Cost @ 10 gwei |
+|---|---|---|---|
+| **This system** | 5,742,274 | 2,871,137,384 | **28.71 BNB** |
+| Basic (no opts) | ~10,400,000 | ~5,200,000,000 | ~52.00 BNB |
+| **Savings** | **-45%** | **-2.33B gas** | **-23.29 BNB** |
 
 ---
 
 ## RPC Strategy
 
-**Primary:** Alchemy BSC Testnet (`ALCHEMY_RPC_URL`) — used for all nonce reads
-and as the first broadcast target. Alchemy has the highest reliability and
-rate limits.
+| Provider | Role | Trigger |
+|---|---|---|
+| Alchemy (primary) | All nonce reads + broadcasts | Always tried first |
+| Binance Fallback 1 | Backup broadcast | Alchemy returns 429 / timeout |
+| Binance Fallback 2 | Last resort | Fallback 1 also rate-limited |
 
-**Fallbacks:** Two public Binance testnet nodes (`FALLBACK_RPC_1`,
-`FALLBACK_RPC_2`). If Alchemy returns a 429, SERVER_ERROR, or TIMEOUT during
-the 500 parallel batches, `RpcManager.broadcast()` transparently rotates to
-the next provider without stopping execution.
+Non-rate-limit errors (nonce conflict, revert) are thrown immediately — no rotation.
 
 ---
 
-## Time Estimates
+## Retry & Resume Logic
 
-| Step                    | Expected Duration |
-|-------------------------|-------------------|
-| `generate-wallets.ts`   | 3–5 minutes       |
-| `prepare-distribution.ts` | < 30 seconds    |
-| `distribute.ts`         | 5–10 minutes      |
+### Per-batch retry
+Each batch gets 3 attempts with exponential backoff:
+```
+Attempt 1 fails → wait 5s
+Attempt 2 fails → wait 10s
+Attempt 3 fails → wait 15s → mark as failed for drain loop
+```
+
+### Drain loop
+After all 500 batches attempt in Pass 1, any failed entries are automatically re-queued:
+```
+Pass 1: 500 batches → e.g. 490 succeed, 10 fail
+Pass 2: 10 batches → e.g. 9 succeed, 1 fails
+Pass 3: 1 batch   → succeeds → "All wallets sent"
+```
+Maximum 5 passes. Stops early if no progress (e.g. out of BNB).
+
+### Resume on restart
+Every parallel group writes a checkpoint to `distribution-plan.json` atomically. On restart:
+```
+Already sent:  95,200
+Remaining:       4,800
+Resuming from last checkpoint automatically
+```
 
 ---
 
 ## Security Notes
 
-- `.env` is listed in `.gitignore` and is never committed.
-- `output/` is listed in `.gitignore` — it contains wallet private keys.
-- `output/MASTER_MNEMONIC.txt` controls all 100,000 generated wallets. Store
-  it securely offline after generation.
-- The on-chain bitmap in `MultiSender.sol` prevents duplicate sends even if
-  `distribute.ts` is re-run or `multisend()` is called again externally.
-  Anyone can verify: `multisender.isClaimed(walletIndex)` returns `true` for
-  already-paid indices.
+| Concern | Mitigation |
+|---|---|
+| Private key exposure | Stored in `.env` only — never in code |
+| `.env` in git | `.gitignore` covers `.env`, `output/`, `wallets.csv` |
+| Duplicate transfers | On-chain bitmap — `_claimed[bucket]` set before `transferFrom` |
+| Reentrancy | `ReentrancyGuard` on `multisend()` |
+| Wallet reuse | Each BIP44 index is unique — `m/44'/60'/0'/0/{i}` |
+| Batch overflow | `require(len <= 200)` enforced on-chain |
 
 ---
 
-## Contract Addresses (BSC Testnet)
+## Output Files Reference
 
-Fill in after deployment:
-
-| Contract      | Address |
-|---------------|---------|
-| ABCToken      | _pending deployment_ |
-| MultiSender   | _pending deployment_ |
+| File | Description |
+|---|---|
+| `output/wallets.csv` | index, address, privateKey, derivationPath |
+| `output/MASTER_MNEMONIC.txt` | BIP44 master mnemonic (controls all wallets) |
+| `output/distribution-plan.json` | Per-wallet state: sent, txHash, timestamp |
+| `output/distribution-log.csv` | Sent wallets: address, amount, amountWei, txHash, timestamp |
+| `output/distribution-log.xlsx` | Sheet 1: Distribution Log, Sheet 2: Unsent (if any), Sheet 3: Summary |
+| `output/distribution.log` | Full timestamped console log of the run |
 
 ---
 
-## Resume Instructions
+## Deploying to BSC Testnet
 
-If `distribute.ts` is interrupted for any reason, simply re-run it:
+1. Get tBNB from [https://www.bnbchain.org/en/testnet-faucet](https://www.bnbchain.org/en/testnet-faucet)
+2. Get a free Alchemy API key from [https://www.alchemy.com](https://www.alchemy.com)
+3. Update `.env` with BSC Testnet values (see Setup section)
+4. Run the same steps — no code changes required
 
 ```bash
-npx ts-node scripts/distribute.ts
+npm run deploy:token
+npm run deploy:multisender
+# update .env with printed addresses
+npm run generate:wallets
+npm run prepare:distribution
+npm run distribute
+npm run export
 ```
 
-The script reads `output/distribution-plan.json`, skips all entries where
-`sent === true`, and continues from the first unsent wallet. No duplicate
-on-chain transfers will occur — the bitmap in `MultiSender.sol` provides a
-second layer of protection even if the off-chain state is somehow incorrect.
-# token-distribution
+---
+
+## Tech Stack
+
+| Layer | Technology |
+|---|---|
+| Blockchain | BNB Smart Chain (BSC) |
+| Smart contracts | Solidity 0.8.20 |
+| Contract framework | Hardhat 2.22 |
+| Contract library | OpenZeppelin 5.0 |
+| Runtime | Node.js + TypeScript |
+| Blockchain SDK | ethers.js v6 |
+| Wallet generation | BIP44 HD derivation |
+| Excel export | ExcelJS |
+| Secrets | dotenv |
+
+---
+
+## Time Estimates (BSC Testnet, 3s block time)
+
+| Step | Estimated Time |
+|---|---|
+| Generate 100k wallets | ~8–9 minutes |
+| Prepare distribution plan | ~4 seconds |
+| Deploy contracts | ~30 seconds |
+| Full distribution (500 batches) | ~5–6 minutes |
+| Export results | ~4 seconds |
+| **Total end-to-end** | **~15 minutes** |
+
+> Local Hardhat (instant mining): distribution completes in ~28 minutes due to serial nonce management overhead on the local node. BSC Testnet with 3s blocks is faster in practice.

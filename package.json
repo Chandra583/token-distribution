@@ -8,12 +8,14 @@
     "deploy:multisender": "npx hardhat run scripts/deploy-multisender.ts --network bscTestnet",
     "generate:wallets": "npx ts-node scripts/generate-wallets.ts",
     "prepare:distribution": "npx ts-node scripts/prepare-distribution.ts",
-    "distribute": "npx ts-node scripts/distribute.ts"
+    "distribute": "npx ts-node scripts/distribute.ts",
+    "export": "npx ts-node scripts/export-results.ts"
   },
   "dependencies": {
     "@openzeppelin/contracts": "^5.0.0",
     "dotenv": "^16.4.5",
-    "ethers": "^6.11.1"
+    "ethers": "^6.11.1",
+    "exceljs": "^4.4.0"
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-toolbox": "^4.0.0",
