@@ -1,0 +1,23 @@
+# Dependencies
+node_modules/
+
+# Environment — contains private key
+.env
+
+# Contract build artifacts
+artifacts/
+cache/
+
+# Output files — contain wallet private keys and distribution data
+output/
+
+# TypeScript build output
+dist/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/

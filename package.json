@@ -1,0 +1,25 @@
+{
+  "name": "bnb-token-distribution",
+  "version": "1.0.0",
+  "description": "BNB Chain BEP-20 token distribution system with gas-optimized MultiSender",
+  "scripts": {
+    "compile": "npx hardhat compile",
+    "deploy:token": "npx hardhat run scripts/deploy-token.ts --network bscTestnet",
+    "deploy:multisender": "npx hardhat run scripts/deploy-multisender.ts --network bscTestnet",
+    "generate:wallets": "npx ts-node scripts/generate-wallets.ts",
+    "prepare:distribution": "npx ts-node scripts/prepare-distribution.ts",
+    "distribute": "npx ts-node scripts/distribute.ts"
+  },
+  "dependencies": {
+    "@openzeppelin/contracts": "^5.0.0",
+    "dotenv": "^16.4.5",
+    "ethers": "^6.11.1"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^4.0.0",
+    "@types/node": "^20.12.0",
+    "hardhat": "^2.22.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.3"
+  }
+}
