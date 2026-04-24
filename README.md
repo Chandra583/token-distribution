@@ -15,9 +15,9 @@ A production-grade BEP-20 token creation and mass wallet distribution system for
 | Failed wallets | 0 | 0 | 0 |
 | Total batches | 500 | 500 | 500 |
 | Total time | 27m 53s | 25m 21s | **19m 46s** |
-| Avg gas / batch | 5,742,274 | 5,742,274 | 5,742,274 |
-| Total gas used | 2,871,137,384 | 2,871,137,384 | 2,871,137,384 |
-| Gas cost @ 10 gwei | 28.71 BNB | 28.71 BNB | **28.71 BNB** |
+| Avg gas / batch | 5,756,112 | 5,748,390 | **5,742,274** |
+| Total gas used | 2,884,672,140 | 2,878,043,820 | **2,871,137,384** |
+| Gas cost @ 10 gwei | 28.85 BNB | 28.78 BNB | **28.71 BNB** |
 | Throughput | 59.8 wallets/s | 65.7 wallets/s | **84.3 wallets/s** |
 
 
