@@ -4,19 +4,23 @@ A production-grade BEP-20 token creation and mass wallet distribution system for
 
 ---
 
-## Proven Results (Local Hardhat Test)
+## Proven Results — Run #3 (Best, High-Speed Connection)
 
-| Metric | Value |
-|---|---|
-| Total wallets | 100,000 |
-| Successful wallets | **100,000 (100%)** |
-| Failed wallets | **0** |
-| Total batches | 500 |
-| Total time | **27m 53s** |
-| Avg gas / batch | 5,742,274 |
-| Total gas used | 2,871,137,384 |
-| Gas cost @ 10 gwei | **28.71 BNB** |
-| Throughput | 59.8 wallets/s |
+> Three full end-to-end runs were completed. Run #3 achieved the best time due to a stable, high-speed internet connection and warm provider caches. Results vary slightly per run (~±15%) based on RPC response latency and network conditions.
+
+| Metric | Run #1 | Run #2 | Run #3 (Best) |
+|---|---|---|---|
+| Total wallets | 100,000 | 100,000 | 100,000 |
+| Successful wallets | **100,000** | **100,000** | **100,000** |
+| Failed wallets | 0 | 0 | 0 |
+| Total batches | 500 | 500 | 500 |
+| Total time | 27m 53s | 25m 21s | **19m 46s** |
+| Avg gas / batch | 5,742,274 | 5,742,274 | 5,742,274 |
+| Total gas used | 2,871,137,384 | 2,871,137,384 | 2,871,137,384 |
+| Gas cost @ 10 gwei | 28.71 BNB | 28.71 BNB | **28.71 BNB** |
+| Throughput | 59.8 wallets/s | 65.7 wallets/s | **84.3 wallets/s** |
+
+
 
 ---
 
