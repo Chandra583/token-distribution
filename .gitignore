@@ -3,6 +3,7 @@ node_modules/
 
 # Environment — contains private key
 .env
+.env.example
 
 # Contract build artifacts
 artifacts/
