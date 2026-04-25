@@ -141,11 +141,11 @@ This system applies five layers to reduce it to **2.77B gas (~$5,000 at 3 gwei)*
 <img width="790" height="692" alt="Screenshot 2026-04-25 053130" src="https://github.com/user-attachments/assets/5d867bae-7c8c-4d78-ba45-4c30620662c0" />
 
 ```
-Naive 1-by-1              →  8.1B gas   (~40.5 BNB)   baseline
-+ Batch (300/tx)          →  6.0B gas   (~30.0 BNB)   -26%  (fewer base tx overheads)
-+ Packed calldata         →  3.7B gas   (~18.5 BNB)   -38%  (32B vs 64B per recipient)
-+ Bitmap guard            → 2.77B gas   (~13.8 BNB)   256× cheaper than bool mapping -5k gas per wallet (no allowance SSTORE)
-```
+Naive 1-by-1                                       →  8.1B gas   (~40.5 BNB)   baseline
++ Batch (300/tx)                                   →  6.0B gas   (~30.0 BNB)   -26%  (fewer base tx overheads)
++ Packed calldata                                  →  3.7B gas   (~18.5 BNB)   -38%  (32B vs 64B per recipient)
++ Bitmap guard (Batch + packed + bitmap)           → 2.77B gas   (~13.8 BNB)   256× cheaper than bool mapping -5k gas per wallet (no allowance SSTORE)
+``` 
 <img width="874" height="375" alt="Screenshot 2026-04-25 052818" src="https://github.com/user-attachments/assets/7215fcd1-6730-47c2-b2d7-fe24f76c2fa0" />
 
 ### Optimization 1 — Packed Calldata (38% less calldata gas)
