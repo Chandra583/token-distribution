@@ -137,6 +137,7 @@ Naive 1-by-1          →  8.1B gas   (~40.5 BNB)   baseline
 + Packed calldata     →  3.7B gas   (~18.5 BNB)   -38% further
 + Bitmap guard        →  2.86B gas  (~14.3 BNB)   saves 256× on flags
 ```
+<img width="874" height="375" alt="image" src="https://github.com/user-attachments/assets/038a7d11-4eef-44c6-9fdc-4923b4745a39" />
 
 ### Optimization 1 — Packed Calldata (38% less calldata gas)
 
@@ -149,6 +150,7 @@ bits  95– 0 → uint96   (12 bytes, whole-token amount)
 ```
 
 Built in `prepare-distribution.ts`, unpacked in `MultiSender.sol`.
+<img width="790" height="692" alt="image" src="https://github.com/user-attachments/assets/e23c3eac-d665-4a6b-b003-2f9c8111db02" />
 
 ### Optimization 2 — Bitmap Duplicate Guard (256× cheaper than bool mapping)
 
