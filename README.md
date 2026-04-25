@@ -21,7 +21,6 @@ A production-grade BEP-20 token creation and mass wallet distribution system for
 | Throughput | 59.8 wallets/s | 65.7 wallets/s | **84.3 wallets/s** |
 
 
-<img width="790" height="692" alt="image" src="https://github.com/user-attachments/assets/07a4d154-3821-4d02-9aaa-93431ac54f82" />
 
 ---
 
