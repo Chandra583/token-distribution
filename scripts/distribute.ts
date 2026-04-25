@@ -2,30 +2,25 @@ import * as fs from "fs";
 import * as path from "path";
 import * as dotenv from "dotenv";
 import { ethers, JsonRpcProvider, Wallet, Contract, TransactionResponse, TransactionReceipt } from "ethers";
-import ExcelJS from "exceljs";
 
 dotenv.config();
 
 // ─── Paths ────────────────────────────────────────────────────────────────────
 
-const OUTPUT_DIR    = path.resolve(__dirname, "../output");
-const PLAN_FILE     = path.join(OUTPUT_DIR, "distribution-plan.json");
-const LOG_FILE      = path.join(OUTPUT_DIR, "distribution.log");
-const CSV_LOG_FILE  = path.join(OUTPUT_DIR, "distribution-log.csv");
-const XLSX_LOG_FILE = path.join(OUTPUT_DIR, "distribution-log.xlsx");
+const OUTPUT_DIR = path.resolve(__dirname, "../output");
+const PLAN_FILE = path.join(OUTPUT_DIR, "distribution-plan.json");
+const LOG_FILE = path.join(OUTPUT_DIR, "distribution.log");
+const CSV_LOG_FILE = path.join(OUTPUT_DIR, "distribution-log.csv");
 const ARTIFACTS_DIR = path.resolve(__dirname, "../artifacts/contracts");
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
-const BATCH_SIZE       = 200;
+const BATCH_SIZE = 300;
 const PARALLEL_BATCHES = 5;
-const MAX_RETRIES      = 3;
-const RETRY_DELAYS_MS  = [5_000, 10_000, 15_000];
-const MAX_DRAIN_PASSES = 5;   // max times to re-queue permanently-failed batches
-
-// 200 cold ERC20 transfers ≈ 7 M gas; 10 M gives ~30 % headroom.
-const GAS_LIMIT    = 10_000_000n;
-const GAS_PRICE    = ethers.parseUnits("10", "gwei");
+const MAX_RETRIES = 3;
+const RETRY_DELAYS_MS = [5_000, 10_000, 15_000];
+const GAS_LIMIT = 14_000_000n;
+const GAS_PRICE = ethers.parseUnits("10", "gwei");
 const CONFIRMATIONS = 1;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -66,71 +61,83 @@ function logError(message: string, err?: unknown): void {
   logStream.write(line + "\n");
 }
 
-// ─── Time formatter ───────────────────────────────────────────────────────────
-
-function formatDuration(ms: number): string {
-  const totalSec = ms / 1000;
-  if (totalSec < 60) return `${totalSec.toFixed(1)}s`;
-  const mins = Math.floor(totalSec / 60);
-  const secs = (totalSec % 60).toFixed(0).padStart(2, "0");
-  return `${mins}m ${secs}s`;
-}
-
 // ─── RPC Manager ──────────────────────────────────────────────────────────────
 
 class RpcManager {
-  private _primary:  JsonRpcProvider;
+  private readonly primaryUrl: string;
+  private readonly fallback1Url: string;
+  private readonly fallback2Url: string;
+
+  private _primary: JsonRpcProvider;
   private _fallback1: JsonRpcProvider;
   private _fallback2: JsonRpcProvider;
 
+  private roundRobinIndex: number = 0;
+  private readonly allProviders: JsonRpcProvider[];
+
   constructor() {
-    this._primary   = new JsonRpcProvider(requireEnv("ALCHEMY_RPC_URL"));
-    this._fallback1 = new JsonRpcProvider(requireEnv("FALLBACK_RPC_1"));
-    this._fallback2 = new JsonRpcProvider(requireEnv("FALLBACK_RPC_2"));
+    this.primaryUrl = requireEnv("ALCHEMY_RPC_URL");
+    this.fallback1Url = requireEnv("FALLBACK_RPC_1");
+    this.fallback2Url = requireEnv("FALLBACK_RPC_2");
+
+    this._primary = new JsonRpcProvider(this.primaryUrl);
+    this._fallback1 = new JsonRpcProvider(this.fallback1Url);
+    this._fallback2 = new JsonRpcProvider(this.fallback2Url);
+
+    this.allProviders = [this._primary, this._fallback1, this._fallback2];
   }
 
-  getPrimary(): JsonRpcProvider { return this._primary; }
+  /** Always use Alchemy for nonce reads — most reliable. */
+  getPrimary(): JsonRpcProvider {
+    return this._primary;
+  }
 
+  /** Round-robin across all 3 providers for load distribution. */
+  getNext(): JsonRpcProvider {
+    const provider = this.allProviders[this.roundRobinIndex % 3];
+    this.roundRobinIndex++;
+    return provider;
+  }
+
+  /**
+   * Broadcast a signed transaction. Tries primary first; on 429 / network
+   * error rotates to fallback1 then fallback2. Logs which provider succeeded.
+   */
   async broadcast(signedTx: string): Promise<TransactionResponse> {
-    const providers = [
-      { name: "Alchemy (primary)",  provider: this._primary   },
+    const providers: Array<{ name: string; provider: JsonRpcProvider }> = [
+      { name: "Alchemy (primary)", provider: this._primary },
       { name: "Binance Fallback 1", provider: this._fallback1 },
       { name: "Binance Fallback 2", provider: this._fallback2 },
     ];
+
     let lastError: unknown;
+
     for (const { name, provider } of providers) {
       try {
         const tx = await provider.broadcastTransaction(signedTx);
         log(`  Broadcast via ${name}`);
         return tx;
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        const isRateLimit = msg.includes("429") || msg.includes("rate limit") ||
-                            msg.includes("SERVER_ERROR") || msg.includes("TIMEOUT") ||
-                            msg.includes("timeout");
-        if (isRateLimit) { log(`  ${name} rate-limited — trying next...`); lastError = err; continue; }
+        const message = err instanceof Error ? err.message : String(err);
+        const isRateLimit =
+          message.includes("429") ||
+          message.includes("SERVER_ERROR") ||
+          message.includes("TIMEOUT") ||
+          message.includes("timeout") ||
+          message.includes("rate limit");
+
+        if (isRateLimit) {
+          log(`  ${name} rate-limited or unreachable, trying next provider...`);
+          lastError = err;
+          continue;
+        }
+
+        // Non-rate-limit errors (e.g. nonce conflict, already known) — rethrow
         throw err;
       }
     }
+
     throw new Error(`All RPC providers exhausted. Last error: ${String(lastError)}`);
-  }
-}
-
-// ─── Serial TX Submitter ─────────────────────────────────────────────────────
-// Serialises sign+broadcast so txs always arrive at the node in nonce order.
-// Receipt waiting is NOT serialised — confirmations run concurrently.
-
-class SerialTxSubmitter {
-  private queue: Promise<void> = Promise.resolve();
-
-  submit(fn: () => Promise<TransactionResponse>): Promise<TransactionResponse> {
-    let resolve!: (tx: TransactionResponse) => void;
-    let reject!:  (err: unknown) => void;
-    const promise = new Promise<TransactionResponse>((res, rej) => { resolve = res; reject = rej; });
-    this.queue = this.queue.then(async () => {
-      try { resolve(await fn()); } catch (err) { reject(err); }
-    });
-    return promise;
   }
 }
 
@@ -148,30 +155,47 @@ function sleep(ms: number): Promise<void> {
 
 function chunkArray<T>(arr: T[], size: number): T[][] {
   const chunks: T[][] = [];
-  for (let i = 0; i < arr.length; i += size) chunks.push(arr.slice(i, i + size));
+  for (let i = 0; i < arr.length; i += size) {
+    chunks.push(arr.slice(i, i + size));
+  }
   return chunks;
 }
 
 function loadPlan(): DistributionEntry[] {
-  if (!fs.existsSync(PLAN_FILE))
+  if (!fs.existsSync(PLAN_FILE)) {
     throw new Error(`distribution-plan.json not found at ${PLAN_FILE}. Run prepare-distribution.ts first.`);
-  return JSON.parse(fs.readFileSync(PLAN_FILE, "utf8")) as DistributionEntry[];
+  }
+  const raw = fs.readFileSync(PLAN_FILE, "utf8");
+  return JSON.parse(raw) as DistributionEntry[];
 }
 
+/** Atomic synchronous write — the resume checkpoint. */
 function savePlan(plan: DistributionEntry[]): void {
   fs.writeFileSync(PLAN_FILE, JSON.stringify(plan, null, 2), "utf8");
 }
 
+/** Load MultiSender ABI from Hardhat artifacts. */
 function loadMultiSenderAbi(): ethers.InterfaceAbi {
-  const p = path.join(ARTIFACTS_DIR, "MultiSender.sol", "MultiSender.json");
-  if (!fs.existsSync(p)) throw new Error(`MultiSender artifact not found at ${p}. Run npx hardhat compile first.`);
-  return (JSON.parse(fs.readFileSync(p, "utf8")) as { abi: ethers.InterfaceAbi }).abi;
+  const artifactPath = path.join(ARTIFACTS_DIR, "MultiSender.sol", "MultiSender.json");
+  if (!fs.existsSync(artifactPath)) {
+    throw new Error(
+      `MultiSender artifact not found at ${artifactPath}. Run  npx hardhat compile  first.`
+    );
+  }
+  const artifact = JSON.parse(fs.readFileSync(artifactPath, "utf8")) as { abi: ethers.InterfaceAbi };
+  return artifact.abi;
 }
 
+/** Load ABCToken ABI from Hardhat artifacts. */
 function loadTokenAbi(): ethers.InterfaceAbi {
-  const p = path.join(ARTIFACTS_DIR, "ABCToken.sol", "ABCToken.json");
-  if (!fs.existsSync(p)) throw new Error(`ABCToken artifact not found at ${p}. Run npx hardhat compile first.`);
-  return (JSON.parse(fs.readFileSync(p, "utf8")) as { abi: ethers.InterfaceAbi }).abi;
+  const artifactPath = path.join(ARTIFACTS_DIR, "ABCToken.sol", "ABCToken.json");
+  if (!fs.existsSync(artifactPath)) {
+    throw new Error(
+      `ABCToken artifact not found at ${artifactPath}. Run  npx hardhat compile  first.`
+    );
+  }
+  const artifact = JSON.parse(fs.readFileSync(artifactPath, "utf8")) as { abi: ethers.InterfaceAbi };
+  return artifact.abi;
 }
 
 // ─── Approval Check ──────────────────────────────────────────────────────────
@@ -182,17 +206,25 @@ async function ensureApproval(
   deployer: Wallet,
   unsentEntries: DistributionEntry[]
 ): Promise<void> {
-  const token = new Contract(tokenAddress, loadTokenAbi(), deployer);
-  const totalNeeded = unsentEntries.reduce((acc, e) => acc + BigInt(e.amountWei), 0n);
-  log(`Total tokens needed:  ${ethers.formatEther(totalNeeded)} ABC`);
+  const tokenAbi = loadTokenAbi();
+  const token = new Contract(tokenAddress, tokenAbi, deployer);
+
+  const totalNeeded: bigint = unsentEntries.reduce(
+    (acc, entry) => acc + BigInt(entry.amountWei),
+    0n
+  );
+
+  log(`Total tokens needed: ${ethers.formatEther(totalNeeded)} ABC`);
+
   const allowance = await token.allowance(deployer.address, multisenderAddress) as bigint;
-  log(`Current allowance:    ${ethers.formatEther(allowance)} ABC`);
+  log(`Current allowance: ${ethers.formatEther(allowance)} ABC`);
+
   if (allowance < totalNeeded) {
     log(`Approving ${ethers.formatEther(totalNeeded)} ABC for MultiSender...`);
     const tx = await token.approve(multisenderAddress, totalNeeded) as TransactionResponse;
     log(`  Approval TX: ${tx.hash}`);
     await tx.wait(1);
-    log(`  Approved.`);
+    log(`  Approved. Allowance updated.`);
   } else {
     log("Allowance sufficient — skipping approval.");
   }
@@ -202,313 +234,237 @@ async function ensureApproval(
 
 async function sendBatch(
   batch: DistributionEntry[],
-  batchLabel: string,
+  batchIndex: number,
+  totalBatches: number,
   multisender: Contract,
   tokenAddress: string,
   deployer: Wallet,
-  rpcManager: RpcManager,
-  submitter: SerialTxSubmitter,
-  chainId: bigint
+  rpcManager: RpcManager
 ): Promise<TransactionReceipt> {
-  const indices   = batch.map((w) => w.index);
-  const packedArr = batch.map((w) => w.packedHex);
-  const calldata  = multisender.interface.encodeFunctionData("multisend", [tokenAddress, indices, packedArr]);
-  const to        = await multisender.getAddress();
+  const indices: number[] = batch.map((w) => w.index);
+  const packedArr: string[] = batch.map((w) => w.packedHex);
 
-  const tx = await submitter.submit(async () => {
-    const nonce    = await rpcManager.getPrimary().getTransactionCount(deployer.address, "pending");
-    const signedTx = await deployer.signTransaction({ to, data: calldata, gasLimit: GAS_LIMIT, gasPrice: GAS_PRICE, nonce, chainId, value: 0n });
-    return rpcManager.broadcast(signedTx);
+  // Always fetch nonce from the reliable primary provider
+  const primaryProvider = rpcManager.getPrimary();
+  const nonce = await primaryProvider.getTransactionCount(deployer.address, "pending");
+
+  // Encode calldata
+  const calldata = multisender.interface.encodeFunctionData("multisend", [
+    tokenAddress,
+    indices,
+    packedArr,
+  ]);
+
+  // Sign and broadcast
+  const network = await primaryProvider.getNetwork();
+  const signedTx = await deployer.signTransaction({
+    to: await multisender.getAddress(),
+    data: calldata,
+    gasLimit: GAS_LIMIT,
+    gasPrice: GAS_PRICE,
+    nonce,
+    chainId: network.chainId,
+    value: 0n,
   });
 
+  const tx = await rpcManager.broadcast(signedTx);
+
+  // Wait for confirmations via primary (most reliable for receipt)
   const receipt = await tx.wait(CONFIRMATIONS);
   if (!receipt) throw new Error("Transaction receipt is null");
-  if (receipt.status === 0) throw new Error(`Transaction reverted on-chain: ${receipt.hash}`);
 
-  log(`${batchLabel} | Wallets: ${batch.length} | TX: ${receipt.hash} | Gas: ${receipt.gasUsed.toLocaleString()} | CONFIRMED`);
+  log(
+    `Batch ${batchIndex}/${totalBatches} | Wallets: ${batch.length} | TX: ${receipt.hash} | Gas: ${receipt.gasUsed.toString()} | Status: CONFIRMED`
+  );
+
   return receipt;
 }
 
 async function sendBatchWithRetry(
   batch: DistributionEntry[],
-  batchLabel: string,
+  batchIndex: number,
+  totalBatches: number,
   multisender: Contract,
   tokenAddress: string,
   deployer: Wallet,
-  rpcManager: RpcManager,
-  submitter: SerialTxSubmitter,
-  chainId: bigint
+  rpcManager: RpcManager
 ): Promise<BatchResult> {
-  const batchIndex = batch[0]?.index ?? -1;
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
-      const receipt = await sendBatch(batch, batchLabel, multisender, tokenAddress, deployer, rpcManager, submitter, chainId);
+      const receipt = await sendBatch(
+        batch, batchIndex, totalBatches, multisender, tokenAddress, deployer, rpcManager
+      );
       return { batchIndex, success: true, txHash: receipt.hash, gasUsed: receipt.gasUsed };
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
+
       if (attempt < MAX_RETRIES) {
         const delay = RETRY_DELAYS_MS[attempt - 1];
-        logError(`${batchLabel} attempt ${attempt}/${MAX_RETRIES} failed: ${message}. Retrying in ${delay / 1000}s...`);
+        logError(`Batch ${batchIndex} attempt ${attempt}/${MAX_RETRIES} failed: ${message}. Retrying in ${delay / 1000}s...`);
         await sleep(delay);
       } else {
-        logError(`${batchLabel} attempt ${attempt}/${MAX_RETRIES} FINAL failure: ${message}.`);
+        const finalDelay = RETRY_DELAYS_MS[MAX_RETRIES - 1];
+        logError(`Batch ${batchIndex} attempt ${attempt}/${MAX_RETRIES} failed: ${message}. Waiting ${finalDelay / 1000}s then marking as FAILED.`);
+        await sleep(finalDelay);
         return { batchIndex, success: false, error: message };
       }
     }
   }
+  // Unreachable but satisfies TypeScript
   return { batchIndex, success: false, error: "Max retries exceeded" };
 }
 
-// ─── Output Writers ──────────────────────────────────────────────────────────
+// ─── CSV Log Writer ──────────────────────────────────────────────────────────
 
 function writeCsvLog(plan: DistributionEntry[]): void {
   const sent = plan.filter((e) => e.sent);
   const lines = ["index,address,amount,amountWei,txHash,timestamp"];
-  for (const e of sent)
-    lines.push(`${e.index},${e.address},${e.amount},${e.amountWei},${e.txHash ?? ""},${e.timestamp ?? ""}`);
+  for (const entry of sent) {
+    lines.push(
+      `${entry.index},${entry.address},${entry.amount},${entry.amountWei},${entry.txHash ?? ""},${entry.timestamp ?? ""}`
+    );
+  }
   fs.writeFileSync(CSV_LOG_FILE, lines.join("\n"), "utf8");
   log(`distribution-log.csv written with ${sent.length.toLocaleString()} entries.`);
-}
-
-async function writeExcelLog(plan: DistributionEntry[]): Promise<void> {
-  const sent = plan.filter((e) => e.sent);
-  const wb   = new ExcelJS.Workbook();
-  wb.creator  = "BNB Token Distribution";
-  wb.created  = new Date();
-
-  const ws = wb.addWorksheet("Distribution Log", {
-    views: [{ state: "frozen", ySplit: 1 }],
-  });
-
-  ws.columns = [
-    { header: "Index",      key: "index",     width: 10 },
-    { header: "Address",    key: "address",   width: 44 },
-    { header: "Tokens",     key: "amount",    width: 10 },
-    { header: "Amount (Wei)", key: "amountWei", width: 26 },
-    { header: "TX Hash",    key: "txHash",    width: 68 },
-    { header: "Timestamp",  key: "timestamp", width: 26 },
-  ];
-
-  // Bold, coloured header row
-  ws.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
-  ws.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1E3A5F" } };
-  ws.getRow(1).alignment = { vertical: "middle", horizontal: "center" };
-
-  for (const e of sent) {
-    ws.addRow({
-      index:     e.index,
-      address:   e.address,
-      amount:    e.amount,
-      amountWei: e.amountWei,
-      txHash:    e.txHash ?? "",
-      timestamp: e.timestamp ?? "",
-    });
-  }
-
-  // Alternate row shading
-  for (let r = 2; r <= sent.length + 1; r++) {
-    if (r % 2 === 0) {
-      ws.getRow(r).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF0F4FA" } };
-    }
-  }
-
-  // Summary sheet
-  const summary = wb.addWorksheet("Summary");
-  summary.columns = [{ header: "Metric", key: "metric", width: 30 }, { header: "Value", key: "value", width: 30 }];
-  summary.getRow(1).font = { bold: true };
-  summary.addRows([
-    { metric: "Total wallets in plan", value: plan.length },
-    { metric: "Successfully sent",     value: sent.length },
-    { metric: "Failed / unsent",       value: plan.length - sent.length },
-    { metric: "Generated at",          value: new Date().toISOString() },
-  ]);
-
-  await wb.xlsx.writeFile(XLSX_LOG_FILE);
-  log(`distribution-log.xlsx written with ${sent.length.toLocaleString()} entries.`);
-}
-
-// ─── Batch runner (one pass over a list of entries) ──────────────────────────
-
-async function runPass(
-  entries: DistributionEntry[],
-  plan: DistributionEntry[],
-  passLabel: string,
-  totalPlanSize: number,
-  multisender: Contract,
-  tokenAddress: string,
-  deployer: Wallet,
-  rpcManager: RpcManager,
-  submitter: SerialTxSubmitter,
-  chainId: bigint,
-  counters: { successCount: number; failCount: number; totalGasUsed: bigint; successBatches: number },
-  startTime: number
-): Promise<number> {
-  // Returns count of newly failed wallets in this pass
-  const batches        = chunkArray(entries, BATCH_SIZE);
-  const parallelGroups = chunkArray(batches, PARALLEL_BATCHES);
-  let newlyFailed = 0;
-
-  log(`${passLabel}: ${entries.length.toLocaleString()} wallets → ${batches.length} batches, ${PARALLEL_BATCHES} parallel`);
-
-  for (let groupIdx = 0; groupIdx < parallelGroups.length; groupIdx++) {
-    const group = parallelGroups[groupIdx];
-
-    const batchPromises = group.map((batch, pos) => {
-      const label = `[${passLabel} G${groupIdx + 1}/${parallelGroups.length} B${pos + 1}]`;
-      return sendBatchWithRetry(batch, label, multisender, tokenAddress, deployer, rpcManager, submitter, chainId);
-    });
-
-    const results = await Promise.allSettled(batchPromises);
-
-    let offset = 0;
-    for (const settled of results) {
-      const currentBatch = group[offset++];
-
-      if (settled.status === "fulfilled" && settled.value.success) {
-        const result = settled.value;
-        for (const entry of currentBatch) {
-          const planEntry = plan.find((p) => p.index === entry.index);
-          if (planEntry) {
-            planEntry.sent      = true;
-            planEntry.txHash    = result.txHash ?? null;
-            planEntry.timestamp = new Date().toISOString();
-          }
-        }
-        counters.successCount  += currentBatch.length;
-        counters.totalGasUsed  += settled.value.gasUsed ?? 0n;
-        counters.successBatches++;
-      } else {
-        const reason = settled.status === "rejected"
-          ? String(settled.reason)
-          : (settled.value.error ?? "unknown");
-        logError(`Batch permanently failed (will retry in next pass): ${reason}`);
-        newlyFailed += currentBatch.length;
-        counters.failCount += currentBatch.length;
-      }
-    }
-
-    savePlan(plan);
-
-    const elapsed   = Date.now() - startTime;
-    const groupsDone = groupIdx + 1;
-    const groupsLeft = parallelGroups.length - groupsDone;
-    const avgMs      = elapsed / groupsDone;
-    const etaMs      = groupsLeft * avgMs;
-    log(`  Group ${groupsDone}/${parallelGroups.length} done | Elapsed: ${formatDuration(elapsed)} | ETA: ~${formatDuration(etaMs)}`);
-  }
-
-  return newlyFailed;
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
-  if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+  if (!fs.existsSync(OUTPUT_DIR)) {
+    fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+  }
 
   log("═══════════════════════════════════════════════════════════");
   log("BNB Token Distribution — Starting");
   log("═══════════════════════════════════════════════════════════");
 
-  const tokenAddress       = requireEnv("TOKEN_ADDRESS");
+  // ── Load env ──
+  const tokenAddress = requireEnv("TOKEN_ADDRESS");
   const multisenderAddress = requireEnv("MULTISENDER_ADDRESS");
-  const privateKey         = requireEnv("PRIVATE_KEY");
+  const privateKey = requireEnv("PRIVATE_KEY");
 
-  const rpcManager      = new RpcManager();
+  // ── Setup providers & signer ──
+  const rpcManager = new RpcManager();
   const primaryProvider = rpcManager.getPrimary();
-  const deployer        = new Wallet(privateKey.startsWith("0x") ? privateKey : `0x${privateKey}`, primaryProvider);
-  log(`Deployer address:      ${deployer.address}`);
+  const deployer = new Wallet(
+    privateKey.startsWith("0x") ? privateKey : `0x${privateKey}`,
+    primaryProvider
+  );
+  log(`Deployer address: ${deployer.address}`);
 
-  const startingBalance = await primaryProvider.getBalance(deployer.address);
-  log(`Deployer BNB balance:  ${ethers.formatEther(startingBalance)} BNB`);
+  const balance = await primaryProvider.getBalance(deployer.address);
+  log(`Deployer BNB balance: ${ethers.formatEther(balance)} BNB`);
 
-  const multisender = new Contract(multisenderAddress, loadMultiSenderAbi(), deployer);
+  // ── Load contracts ──
+  const multisenderAbi = loadMultiSenderAbi();
+  const multisender = new Contract(multisenderAddress, multisenderAbi, deployer);
 
-  const plan        = loadPlan();
-  const alreadySent = plan.filter((e) => e.sent).length;
+  // ── Load plan & compute resume state ──
+  const plan = loadPlan();
+  const unsentEntries = plan.filter((e) => !e.sent);
+  const alreadySent = plan.length - unsentEntries.length;
 
   log(`Total wallets in plan: ${plan.length.toLocaleString()}`);
-  log(`Already sent:          ${alreadySent.toLocaleString()}`);
-  log(`Remaining:             ${(plan.length - alreadySent).toLocaleString()}`);
+  log(`Already sent: ${alreadySent.toLocaleString()}`);
+  log(`Remaining: ${unsentEntries.length.toLocaleString()}`);
 
-  if (plan.every((e) => e.sent)) {
-    log("All wallets already sent! Writing outputs.");
+  if (unsentEntries.length === 0) {
+    log("All wallets already sent! Writing final CSV log.");
     writeCsvLog(plan);
-    await writeExcelLog(plan);
     log("Done.");
     process.exit(0);
   }
 
-  // Re-check allowance for all unsent entries
-  await ensureApproval(tokenAddress, multisenderAddress, deployer, plan.filter((e) => !e.sent));
+  const batchesDone = Math.floor(alreadySent / BATCH_SIZE);
+  const totalBatches = Math.ceil(plan.length / BATCH_SIZE);
+  log(`Resuming: ${batchesDone} batches already done, ${Math.ceil(unsentEntries.length / BATCH_SIZE)} remaining`);
 
-  const { chainId } = await primaryProvider.getNetwork();
-  log(`Chain ID: ${chainId}`);
+  // ── Ensure token approval ──
+  await ensureApproval(tokenAddress, multisenderAddress, deployer, unsentEntries);
 
-  // Single submitter for the entire run
-  const submitter = new SerialTxSubmitter();
+  // ── Batch execution ──
+  const batches = chunkArray(unsentEntries, BATCH_SIZE);
+  const parallelGroups = chunkArray(batches, PARALLEL_BATCHES);
 
-  const counters = { successCount: alreadySent, failCount: 0, totalGasUsed: 0n, successBatches: 0 };
+  // We track the global batch number for display purposes
+  let globalBatchCounter = batchesDone;
+  let successCount = alreadySent;
+  let failCount = 0;
   const startTime = Date.now();
 
-  // ── Drain loop ────────────────────────────────────────────────────────────
-  // After every pass, re-queue any wallets that are still unsent.
-  // Stops when ALL wallets are sent, OR no progress in a pass (truly stuck).
+  log(`\nStarting distribution: ${batches.length} batches, ${PARALLEL_BATCHES} in parallel`);
+  log("─────────────────────────────────────────────────────────────");
 
-  for (let pass = 1; pass <= MAX_DRAIN_PASSES; pass++) {
-    const unsent = plan.filter((e) => !e.sent);
-    if (unsent.length === 0) break;
+  for (let groupIdx = 0; groupIdx < parallelGroups.length; groupIdx++) {
+    const group = parallelGroups[groupIdx];
 
-    log(`\n── Pass ${pass}/${MAX_DRAIN_PASSES} — ${unsent.length.toLocaleString()} wallets to send ──`);
+    const batchPromises = group.map((batch) => {
+      globalBatchCounter++;
+      const currentBatchNum = globalBatchCounter;
+      return sendBatchWithRetry(
+        batch,
+        currentBatchNum,
+        totalBatches,
+        multisender,
+        tokenAddress,
+        deployer,
+        rpcManager
+      );
+    });
 
-    const prevFail = counters.failCount;
-    counters.failCount = 0; // reset per-pass fail count
+    const results = await Promise.allSettled(batchPromises);
 
-    await runPass(
-      unsent, plan, `Pass${pass}`,
-      plan.length, multisender, tokenAddress, deployer,
-      rpcManager, submitter, chainId, counters, startTime
-    );
+    // Process results and update plan
+    let batchGroupOffset = 0;
+    for (const settled of results) {
+      const currentBatch = group[batchGroupOffset];
+      batchGroupOffset++;
 
-    const stillUnsent = plan.filter((e) => !e.sent).length;
-    if (stillUnsent === 0) { log("All wallets sent — exiting drain loop."); break; }
+      if (settled.status === "fulfilled") {
+        const result = settled.value;
 
-    // No progress → truly stuck (e.g. out of BNB, contract broken)
-    if (counters.failCount >= prevFail && pass > 1) {
-      logError(`No progress in pass ${pass} — ${stillUnsent} wallets remain unsent. Stopping.`);
-      break;
+        if (result.success) {
+          // Mark all entries in this batch as sent
+          for (const entry of currentBatch) {
+            const planEntry = plan.find((p) => p.index === entry.index);
+            if (planEntry) {
+              planEntry.sent = true;
+              planEntry.txHash = result.txHash ?? null;
+              planEntry.timestamp = new Date().toISOString();
+            }
+          }
+          successCount += currentBatch.length;
+        } else {
+          logError(`Batch ${result.batchIndex} permanently failed: ${result.error ?? "unknown"}`);
+          failCount += currentBatch.length;
+        }
+      } else {
+        logError(`Batch Promise rejected (unexpected):`, settled.reason);
+        failCount += currentBatch.length;
+      }
     }
 
-    if (pass < MAX_DRAIN_PASSES) {
-      log(`Pass ${pass} done. ${stillUnsent} still unsent — starting pass ${pass + 1} in 5s...`);
-      await sleep(5_000);
-    }
+    // Atomic checkpoint write after each parallel group
+    savePlan(plan);
+    log(`Group ${groupIdx + 1}/${parallelGroups.length} complete. Checkpoint saved.`);
   }
 
-  // ── Final summary ──────────────────────────────────────────────────────────
-  const totalMs      = Date.now() - startTime;
+  // ── Final summary ──
+  const totalTime = ((Date.now() - startTime) / 1000).toFixed(1);
   const finalBalance = await primaryProvider.getBalance(deployer.address);
-  const bnbUsed      = startingBalance - finalBalance;
-  const avgGas       = counters.successBatches > 0 ? counters.totalGasUsed / BigInt(counters.successBatches) : 0n;
-  const gasCostWei   = counters.totalGasUsed * GAS_PRICE;
-  const totalSentFinal = plan.filter((e) => e.sent).length;
-  const totalFailFinal = plan.length - totalSentFinal;
+  const bnbUsed = ethers.formatEther(balance - finalBalance);
 
   log("\n═══════════════════════════════════════════════════════════");
   log("DISTRIBUTION COMPLETE");
   log("═══════════════════════════════════════════════════════════");
-  log(`Total time:            ${formatDuration(totalMs)}`);
-  log(`Successful wallets:    ${totalSentFinal.toLocaleString()}`);
-  log(`Failed wallets:        ${totalFailFinal.toLocaleString()}`);
-  log(`Successful batches:    ${counters.successBatches}`);
-  log(`Avg gas / batch:       ${avgGas.toLocaleString()} gas`);
-  log(`Total gas used:        ${counters.totalGasUsed.toLocaleString()} gas`);
-  log(`Gas cost @ 10 gwei:    ${ethers.formatEther(gasCostWei)} BNB (calc)`);
-  log(`BNB balance consumed:  ${ethers.formatEther(bnbUsed)} BNB (actual)`);
-  log(`Throughput:            ${(totalSentFinal / (totalMs / 1000)).toFixed(1)} wallets/s`);
+  log(`Total time:     ${totalTime}s`);
+  log(`Success:        ${successCount.toLocaleString()} wallets`);
+  log(`Failed:         ${failCount.toLocaleString()} wallets`);
+  log(`BNB used:       ${bnbUsed} BNB`);
   log("═══════════════════════════════════════════════════════════");
 
   writeCsvLog(plan);
-  await writeExcelLog(plan);
   logStream.end();
 }
 

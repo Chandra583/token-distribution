@@ -8,8 +8,7 @@
     "deploy:multisender": "npx hardhat run scripts/deploy-multisender.ts --network bscTestnet",
     "generate:wallets": "npx ts-node scripts/generate-wallets.ts",
     "prepare:distribution": "npx ts-node scripts/prepare-distribution.ts",
-    "distribute": "npx ts-node scripts/distribute.ts",
-    "export": "npx ts-node scripts/export-results.ts"
+    "distribute": "npx ts-node scripts/distribute.ts"
   },
   "dependencies": {
     "@openzeppelin/contracts": "^5.0.0",
