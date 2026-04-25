@@ -261,35 +261,37 @@ Gas consumed is **identical regardless of Alchemy plan** — the plan affects sp
 | `distribute.ts` (v2, 350/batch, BSC Testnet) | **~3–4 minutes** |
 | `export-results.ts` | ~5 seconds |
 
-### Alchemy Plan Comparison — Time on BSC Testnet (v2)
+### Alchemy Plan Comparison — Time on BSC Testnet (v2, 350/batch)
 
 > BSC Testnet block time = **3 seconds**. Each group of 5 batches = 1 block wait.
-> 67 groups × 5 batches = 334 batches total.
+> **58 groups × 5 batches = 286 batches total** (350/batch, 100k wallets).
 
-Each group of 5 batches needs approximately **25–35 RPC calls**:
-- 1× `eth_getTransactionCount` (SerialTxSubmitter seeds once per group)
-- 5× `eth_sendRawTransaction` (broadcast, serial)
-- ~15–25× `eth_getTransactionReceipt` (confirmation polling, parallel)
+Each group of 5 batches needs approximately **12–20 RPC calls**:
+- 1× `eth_getTransactionCount` (SerialTxSubmitter seeds nonce once per group)
+- 5× `eth_sendRawTransaction` (broadcast, serial — no collisions)
+- ~6–14× `eth_getTransactionReceipt` (confirmation polling, parallel)
 
 | Alchemy Plan | Rate Limit | RPC overhead/group | Block wait/group | **Total for 100k wallets** |
 |---|---|---|---|---|
-| **Free** | 25 req/s | ~1.2s (queuing) | ~3–4s | ~10–15 min |
+| **Free** | 25 req/s | ~1.2s (queuing starts) | ~3–4s | **~9–12 min** |
 | **Pay as You Go** | 300 req/s | ~0.1s (negligible) | ~3–4s | **~3–4 min** |
 | **Enterprise** | 1,000 req/s | ~0.04s (instant) | ~3–4s | **~3 min** |
 
-> v2's `SerialTxSubmitter` reduces RPC calls per group significantly vs v1 (no retry polling).
-> Both Pay as You Go and Enterprise are now **block-time limited** — gas, not RPC, is the constraint.
+> v2's `SerialTxSubmitter` eliminates all retry polling — far fewer RPC calls per group vs v1.
+> Both Pay as You Go and Enterprise are **block-time limited** (3s BSC) — RPC is not the bottleneck.
+> Free tier queuing is reduced too (58 groups vs 67), saving ~3 minutes vs the 300/batch v2 estimate.
 
-### For 1 Million wallets (scale-up projection, v2)
+### For 1 Million wallets (scale-up projection, v2, 350/batch)
 
-| Plan | Batches | Est. Time | Gas | Cost @ 3 gwei |
-|------|---------|-----------|-----|---------------|
-| Free | 3,334 | ~2–3 hours | 27.7B gas | ~83.1 BNB |
-| **Pay as You Go** | 3,334 | **~30 min** | 27.7B gas | ~83.1 BNB |
-| **Enterprise** | 3,334 | **~25 min** | 27.7B gas | ~83.1 BNB |
+| Plan | Batches | Groups | Est. Time | Gas | Cost @ 3 gwei |
+|------|---------|--------|-----------|-----|---------------|
+| **Free** | 2,858 | 572 | **~90 min–2 hrs** | 27.7B gas | ~83.1 BNB |
+| **Pay as You Go** | 2,858 | 572 | **~28 min** | 27.7B gas | ~83.1 BNB |
+| **Enterprise** | 2,858 | 572 | **~25 min** | 27.7B gas | ~83.1 BNB |
 
-> Gas scales linearly — 10× wallets = 10× gas. Time scales linearly too.
-> v2 is ~15% faster and ~3% cheaper than v1 at any scale.
+> Gas scales linearly — 10× wallets = 10× gas cost regardless of plan or batch size.
+> Time scales linearly — 10× wallets ≈ 10× time. Enterprise / Pay as You Go are the only viable options for 1M+.
+> v2 (350/batch) is **16% faster** and **3.3% cheaper** than v1 (300/batch) at any scale.
 
 ---
 
