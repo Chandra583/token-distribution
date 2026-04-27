@@ -91,7 +91,9 @@ npm run generate:wallets
 ```
 
 Output: `output/wallets.csv`, `output/MASTER_MNEMONIC.txt`  
-Time: ~3–5 minutes (BIP44 HD derivation for 100k wallets)
+Time: **~17 seconds** (8 Worker Threads × 12,500 wallets each, 5,899 wallets/s)
+
+> Workers auto-scale to available CPU cores (capped at 8). Each worker uses `deriveChild(i)` on a cached account node — 1 EC multiply per wallet instead of 4 full path re-derivations.
 
 > Keep `MASTER_MNEMONIC.txt` secure offline — it controls all 100k wallets.
 
@@ -254,7 +256,7 @@ Gas consumed is **identical regardless of Alchemy plan** — the plan affects sp
 
 | Step | Expected Duration |
 |------|-------------------|
-| `generate-wallets.ts` | ~3–5 minutes |
+| `generate-wallets.ts` | **~17 seconds** (8 Worker Threads, 5,899 wallets/s) |
 | `prepare-distribution.ts` | ~5 seconds |
 | Deploy contracts | ~30 seconds |
 | `distribute.ts` (v2, 350/batch, local) | **~1 minute** |
