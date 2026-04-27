@@ -8,7 +8,10 @@
     "deploy:multisender": "npx hardhat run scripts/deploy-multisender.ts --network bscTestnet",
     "generate:wallets": "npx ts-node scripts/generate-wallets.ts",
     "prepare:distribution": "npx ts-node scripts/prepare-distribution.ts",
-    "distribute": "npx ts-node scripts/distribute.ts"
+    "distribute": "npx ts-node scripts/distribute.ts",
+    "deploy:token:opbnb": "npx hardhat run scripts/deploy-token.ts --network opbnbTestnet",
+    "deploy:multisender:opbnb": "npx hardhat run scripts/deploy-multisender.ts --network opbnbTestnet",
+    "distribute:opbnb": "cross-env NETWORK=opbnb npx ts-node scripts/distribute.ts"
   },
   "dependencies": {
     "@openzeppelin/contracts": "^5.0.0",
@@ -19,6 +22,7 @@
   "devDependencies": {
     "@nomicfoundation/hardhat-toolbox": "^4.0.0",
     "@types/node": "^20.12.0",
+    "cross-env": "^10.1.0",
     "hardhat": "^2.22.0",
     "ts-node": "^10.9.2",
     "typescript": "^5.4.3"

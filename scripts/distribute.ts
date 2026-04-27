@@ -21,9 +21,17 @@ const MAX_RETRIES      = 3;
 const RETRY_DELAYS_MS  = [5_000, 10_000, 15_000];
 const MAX_DRAIN_PASSES = 5;
 
+// ── Network-aware config ──────────────────────────────────────────────────────
+// opBNB L2: ~0.001 gwei gas price, ~1s block time
+// BSC L1:   ~10 gwei gas price,    ~3s block time
+// Use NETWORK=opbnb env var to switch, defaults to BSC L1 behaviour
+const IS_OPBNB = (process.env.NETWORK ?? "").toLowerCase() === "opbnb";
+
 // 350 cold ERC20 transfers via transfer() ≈ 11.2M gas; 15M gives ~34% headroom.
 const GAS_LIMIT    = 15_000_000n;
-const GAS_PRICE    = ethers.parseUnits("10", "gwei");
+const GAS_PRICE    = IS_OPBNB
+  ? ethers.parseUnits("0.001", "gwei")   // opBNB L2 — ~10,000× cheaper
+  : ethers.parseUnits("10",   "gwei");   // BSC L1
 const CONFIRMATIONS = 1;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
