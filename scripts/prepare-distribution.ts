@@ -91,7 +91,8 @@ async function prepareDistribution(): Promise<void> {
   console.log(`Expected minimum:       ${minPossible.toLocaleString()} ABC (${AMOUNT_MIN} × ${wallets.length.toLocaleString()})`);
   console.log(`Expected maximum:       ${maxPossible.toLocaleString()} ABC (${AMOUNT_MAX} × ${wallets.length.toLocaleString()})`);
   console.log(`Total wei:              ${(totalTokens * BigInt(10 ** 18)).toString()}`);
-  console.log(`Batches needed:         ${Math.ceil(wallets.length / 200).toLocaleString()} (200 wallets/batch)`);
+  const BATCH_SIZE = 350;
+  console.log(`Batches needed:         ${Math.ceil(wallets.length / BATCH_SIZE).toLocaleString()} (${BATCH_SIZE} wallets/batch)`);
   console.log("─────────────────────────────────────────────────\n");
 
   console.log(`Writing ${PLAN_FILE}...`);
